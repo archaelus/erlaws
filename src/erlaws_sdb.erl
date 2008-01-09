@@ -177,7 +177,7 @@ delete_attributes(Domain, Item, Attributes) when is_list(Domain),
 delete_item(Domain, Item) when is_list(Domain), 
 			       is_list(Item) ->
     try delete_attributes(Domain, Item, []) of
-	{ok, _Body} -> {ok}
+	{ok} -> {ok}
     catch
 	throw:{error, Descr} ->
 	    {error, Descr}
@@ -318,7 +318,7 @@ query_items(Domain, QueryExp, Options) when is_list(Options) ->
 				 [makeParam(X) || X <- Options]]),
     {XmlDoc, _Rest} = xmerl_scan:string(Body),
     ItemNodes = xmerl_xpath:string("//ItemName/text()", XmlDoc),
-    [Node#xmlText.value || Node <- ItemNodes].
+    {ok, [Node#xmlText.value || Node <- ItemNodes]}.
 
 
 %% internal functions
@@ -397,8 +397,7 @@ mkEntryName(Counter, Key) ->
     {"Attribute." ++ integer_to_list(Counter)
      ++ ".Name", erlaws_util:url_encode(Key)}.
 mkEntryValue(Counter, Value) ->
-    {"Attribute."++integer_to_list(Counter) 
-     ++ ".Value", erlaws_util:url_encode(Value)}.
+    {"Attribute."++integer_to_list(Counter) ++ ".Value", Value}.
 
 flattenParams({K, V, R}, {C, L}) ->
     PreResult = if R ->
