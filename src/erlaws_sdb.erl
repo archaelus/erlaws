@@ -394,8 +394,7 @@ buildAttributeParams(Attributes) ->
     lists:reverse(L).
 
 mkEntryName(Counter, Key) ->
-    {"Attribute." ++ integer_to_list(Counter)
-     ++ ".Name", erlaws_util:url_encode(Key)}.
+    {"Attribute." ++ integer_to_list(Counter) ++ ".Name", Key}.
 mkEntryValue(Counter, Value) ->
     {"Attribute."++integer_to_list(Counter) ++ ".Value", Value}.
 
