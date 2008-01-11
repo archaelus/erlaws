@@ -439,7 +439,7 @@ aggrV({K,V}, L) when is_list(V),
 		     is_list(hd(V)) -> [{K,V,false}|L];
 aggrV({K,V}, L) -> [{K,[V],false}|L];
 
-aggrV({K}, L) -> [{K, [], false}|L].
+aggrV(K, L) -> [{K, [], false}|L].
 
 collapse(L) ->
     AggrL = lists:foldl( fun aggrV/2, [], lists:keysort(1, L) ),
