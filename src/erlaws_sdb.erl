@@ -12,7 +12,7 @@
 -export([create_domain/1, delete_domain/1, list_domains/0, list_domains/1,
 	 put_attributes/3, delete_item/2, delete_attributes/3,
 	 get_attributes/2, get_attributes/3, list_items/1, list_items/2, 
-	 query_items/2, query_items/3]).
+	 query_items/2, query_items/3, storage_size/2]).
 
 %% include record definitions
 -include_lib("xmerl/include/xmerl.hrl").
@@ -183,6 +183,27 @@ delete_item(Domain, Item) when is_list(Domain),
 	    {error, Descr}
     end.
 
+%% Returns all of the attributes associated with the items in the given list.
+%%
+%% If the item does not exist on the replica that was accessed for this 
+%% operation, an empty set is returned. The system does not return an 
+%% error as it cannot guarantee the item does not exist on other replicas.
+%%
+%% Note: Currently SimpleDB is only capable of returning the attributes for
+%%       a single item. To work around this limitation, this function starts
+%%       length(Items) parallel requests to sdb and aggregates the results.
+%%
+%% Spec: get_attributes(Domain::string(), [Item::string(),..]) -> 
+%%       {ok, Items::[{Item, Attributes::[{Name::string(), Values::[string()]}]}]} |
+%%       {error, {Code::string(), Msg::string(), ReqId::string()}}
+%%
+%%       Code::string() -> "InvalidParameterValue" | "MissingParameter" | "NoSuchDomain"
+%%
+get_attributes(Domain, Items) when is_list(Domain),
+				   is_list(Items), 
+				   is_list(hd(Items)) ->
+    get_attributes(Domain, Items, "");
+
 %% Returns all of the attributes associated with the item.
 %%
 %% If the item does not exist on the replica that was accessed for this 
@@ -204,6 +225,44 @@ get_attributes(Domain, Item) when is_list(Domain),
 				  is_list(Item) ->
     get_attributes(Domain, Item, "").
 
+%% Returns the requested attribute for a list of items. 
+%%
+%% See get_attributes/2 for further documentation.
+%%
+%% Spec: get_attributes(Domain::string(), [Item::string(),...], Attribute::string()) -> 
+%%       {ok, Items::[{Item, Attribute::[{Name::string(), Values::[string()]}]}]} |
+%%       {error, {Code::string(), Msg::string(), ReqId::string()}}
+%%
+%%       Code::string() -> "InvalidParameterValue" | "MissingParameter" | "NoSuchDomain"
+%%
+get_attributes(Domain, Items, Attribute) when is_list(Domain),
+					      is_list(Items), 
+					      is_list(hd(Items)),
+					      is_list(Attribute) ->
+    Fetch = fun(X) -> 
+		    ParentPID = self(), 
+		    spawn(fun() ->
+				  case get_attributes(Domain, X, Attribute) of
+				      {ok, [ItemResult]} ->
+					  ParentPID ! { ok, ItemResult };
+				      {error, Descr} -> 
+					  ParentPID ! {error, Descr}
+				  end
+			  end)
+	    end,
+    Receive= fun(_) ->
+		     receive 
+			 { ok, Anything } -> Anything;
+			 { error, Descr } -> {error, Descr }
+		     end
+	     end,
+    lists:foreach(Fetch, Items),
+    Results = lists:map(Receive, Items),
+    case proplists:get_all_values(error, Results) of 
+	[] -> {ok, Results};
+	[Error|_Rest] -> {error, Error}
+    end;
+
 %% Returns the requested attribute for an item. 
 %%
 %% See get_attributes/2 for further documentation.
@@ -215,8 +274,8 @@ get_attributes(Domain, Item) when is_list(Domain),
 %%       Code::string() -> "InvalidParameterValue" | "MissingParameter" | "NoSuchDomain"
 %%
 get_attributes(Domain, Item, Attribute) when is_list(Domain),
-					      is_list(Item),
-					      is_list(Attribute) ->
+					     is_list(Item),
+					     is_list(Attribute) ->
     try genericRequest(erlaws_cred:get(), "GetAttributes", Domain, Item,
 		       Attribute, []) of
 	{ok, Body} ->
@@ -234,6 +293,7 @@ get_attributes(Domain, Item, Attribute) when is_list(Domain),
 	throw:{error, Descr} ->
 	    {error, Descr}
     end.
+
 
 
 %% Returns a list of all items of a domain - 100 at a time. If your
@@ -320,8 +380,28 @@ query_items(Domain, QueryExp, Options) when is_list(Options) ->
     ItemNodes = xmerl_xpath:string("//ItemName/text()", XmlDoc),
     {ok, [Node#xmlText.value || Node <- ItemNodes]}.
 
+%% storage cost
+
+storage_size(Item, Attributes) ->
+    ItemSize = length(Item) + 45,
+    {AttrSize, ValueSize} = calcAttrStorageSize(Attributes),
+    {AttrSize, ItemSize + ValueSize}.
 
 %% internal functions
+
+calcAttrStorageSize(Attributes) ->
+    calcAttrStorageSize(Attributes, {0, 0}).
+
+calcAttrStorageSize([{Attr, ValueList}|Rest], {AttrSize, ValueSize}) ->
+    calcAttrStorageSize(Rest, {AttrSize + length(Attr) + 45, 
+			       calcValueStorageSize(ValueSize, ValueList)});
+calcAttrStorageSize([], Result) ->
+    Result.
+
+calcValueStorageSize(ValueSize, [Value|Rest]) ->
+    calcValueStorageSize(ValueSize + length(Value) + 45, Rest);
+calcValueStorageSize(ValueSize, []) ->
+    ValueSize.
 
 sign (Key,Data) ->
     %io:format("StringToSign:~n ~p~n", [Data]),
