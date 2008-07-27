@@ -6,7 +6,7 @@
 %%% Created : 25 Dec 2007 by Sascha Matzke <sascha.matzke@didolo.com>
 %%%-------------------------------------------------------------------
 
--module(erlaws_s3).
+-module(erlaws_s3, [AWS_KEY, AWS_SEC_KEY, SECURE]).
 
 %% API
 -export([list_buckets/0, create_bucket/1, create_bucket/2, delete_bucket/1]).
@@ -15,7 +15,7 @@
 
 %% include record definitions
 -include_lib("xmerl/include/xmerl.hrl").
--include("../include/erlaws_s3.hrl").
+-include("../include/erlaws.hrl").
 
 %% macro definitions
 -define( AWS_S3_HOST, "s3.amazonaws.com").
@@ -32,13 +32,15 @@
 %%       {error, {Code::string(), Msg::string(), ReqId::string()}}
 %%
 list_buckets() ->
-    try genericRequest(erlaws_cred:get(), get, 
-		       "", "", "", [], "", <<>>) of
-	{ok, _Headers, Body} -> 
+    try genericRequest(get, "", "", "", [], "", <<>>) of
+	{ok, Headers, Body} -> 
 	    {XmlDoc, _Rest} = xmerl_scan:string(binary_to_list(Body)),
 	    TextNodes       = xmerl_xpath:string("//Bucket/Name/text()", XmlDoc),
 	    BExtr = fun (#xmlText{value=T}) -> T end,
-	    {ok, [BExtr(Node) || Node <- TextNodes]}
+		RequestId = case lists:keytake("x-amz-request-id", 1, Headers) of
+			{value, {_, ReqId}, _} -> ReqId;
+			_ -> "" end,
+	    {ok, [BExtr(Node) || Node <- TextNodes], {requestId, RequestId}}
     catch
 	throw:{error, Descr} ->
 	    {error, Descr}
@@ -53,10 +55,12 @@ list_buckets() ->
 %%       {error, {Code::string(), Msg::string(), ReqId::string()}}
 %%
 create_bucket(Bucket) ->
-    try genericRequest(erlaws_cred:get(), put, 
-		       Bucket, "", "", [], "", <<>>) of
-	{ok, _Headers, _Body} -> 
-	    {ok, Bucket}
+    try genericRequest(put, Bucket, "", "", [], "", <<>>) of
+	{ok, Headers, _Body} -> 
+	    RequestId = case lists:keytake("x-amz-request-id", 1, Headers) of
+			{value, {_, ReqId}, _} -> ReqId;
+			_ -> "" end,
+		{ok, Bucket, {requestId, RequestId}}
     catch
 	throw:{error, Descr} ->
 	    {error, Descr}
@@ -78,10 +82,12 @@ create_bucket(Bucket, eu) ->
     LCfg = <<"<CreateBucketConfiguration>
                   <LocationConstraint>EU</LocationConstraint>
              </CreateBucketConfiguration>">>,
-    try genericRequest(erlaws_cred:get(), put, Bucket, "", "", [], 
-		       "", LCfg) of
-	{ok, _Headers, _Body} ->
-	    {ok, Bucket}
+    try genericRequest(put, Bucket, "", "", [], "", LCfg) of
+	{ok, Headers, _Body} ->
+		RequestId = case lists:keytake("x-amz-request-id", 1, Headers) of
+			{value, {_, ReqId}, _} -> ReqId;
+			_ -> "" end,
+	    {ok, Bucket, {requestId, RequestId}}
     catch
 	throw:{error, Descr} ->
 	    {error, Descr}
@@ -94,10 +100,12 @@ create_bucket(Bucket, eu) ->
 %%       {error, {Code::string(), Msg::string(), ReqId::string()}}
 %%
 delete_bucket(Bucket) ->
-    try genericRequest(erlaws_cred:get(), delete, Bucket, "", "", [],
-		       "", <<>>) of
-	{ok, _Headers, _Body} ->
-	    {ok}
+    try genericRequest(delete, Bucket, "", "", [], "", <<>>) of
+	{ok, Headers, _Body} ->
+	    RequestId = case lists:keytake(?S3_REQ_ID_HEADER, 1, Headers) of
+			{value, {_, ReqId}, _} -> ReqId;
+			_ -> "" end,
+		{ok, {requestId, RequestId}}
     catch 
 	throw:{error, Descr} ->
 	    {error, Descr}
@@ -106,8 +114,8 @@ delete_bucket(Bucket) ->
 %% Lists the contents of a bucket.
 %%
 %% Spec: list_contents(Bucket::string()) ->
-%%       {ok, #list_result{isTruncated::boolean(),
-%%                         keys::[#object_info{}],
+%%       {ok, #s3_list_result{isTruncated::boolean(),
+%%                         keys::[#s3_object_info{}],
 %%                         prefix::[string()]}} |
 %%       {error, {Code::string(), Msg::string(), ReqId::string()}}
 %%
@@ -118,8 +126,8 @@ list_contents(Bucket) ->
 %%
 %% Spec: list_contents(Bucket::string(), Options::[{atom(), 
 %%                     (integer() | string())}]) ->
-%%       {ok, #list_result{isTruncated::boolean(),
-%%                         keys::[#object_info{}],
+%%       {ok, #s3_list_result{isTruncated::boolean(),
+%%                         keys::[#s3_object_info{}],
 %%                         prefix::[string()]}} |
 %%       {error, {Code::string(), Msg::string(), ReqId::string()}}
 %%
@@ -128,9 +136,8 @@ list_contents(Bucket) ->
 %%
 list_contents(Bucket, Options) when is_list(Options) ->
     QueryParameters = [makeParam(X) || X <- Options],
-    try genericRequest(erlaws_cred:get(), get, Bucket, 
-		       "", QueryParameters, [], "", <<>>) of
-	{ok, _Headers, Body} -> 
+    try genericRequest(get, Bucket, "", QueryParameters, [], "", <<>>) of
+	{ok, Headers, Body} -> 
 	    {XmlDoc, _Rest} = xmerl_scan:string(binary_to_list(Body)),
 	    [Truncated| _Tail] = xmerl_xpath:string("//IsTruncated/text()", 
 						    XmlDoc),
@@ -138,10 +145,13 @@ list_contents(Bucket, Options) when is_list(Options) ->
 	    KeyList = [extractObjectInfo(Node) || Node <- ContentNodes],
 	    PrefixList = [Node#xmlText.value || 
 			     Node <- xmerl_xpath:string(?PREFIX_XPATH, XmlDoc)],
-	    {ok, #list_result{isTruncated=case Truncated#xmlText.value of
+		RequestId = case lists:keytake(?S3_REQ_ID_HEADER, 1, Headers) of
+			{value, {_, ReqId}, _} -> ReqId;
+			_ -> "" end,			
+	    {ok, #s3_list_result{isTruncated=case Truncated#xmlText.value of
 					      "true" -> true;
 					      _ -> false end, 
-			      keys=KeyList, prefixes=PrefixList}}
+			      keys=KeyList, prefixes=PrefixList}, {requestId, RequestId}}
     catch 
 	throw:{error, Descr} ->
 	    {error, Descr}
@@ -152,14 +162,16 @@ list_contents(Bucket, Options) when is_list(Options) ->
 %% Spec: put_object(Bucket::string(), Key::string(), Data::binary(),
 %%                  ContentType::string(), 
 %%                  Metadata::[{Key::string(), Value::string()}]) ->
-%%       {ok, #object_info(key=Key::string(), size=Size::integer())} |
+%%       {ok, #s3_object_info(key=Key::string(), size=Size::integer())} |
 %%       {error, {Code::string(), Msg::string(), ReqId::string()}}
 %%
 put_object(Bucket, Key, Data, ContentType, Metadata) ->
-    try genericRequest(erlaws_cred:get(), put, Bucket, Key, [],
-		       Metadata, ContentType, Data) of
-	{ok, _Headers, _Body} -> 
-	    {ok, #object_info{key=Key, size=size(Data)}}
+    try genericRequest(put, Bucket, Key, [], Metadata, ContentType, Data) of
+	{ok, Headers, _Body} -> 
+	    RequestId = case lists:keytake(?S3_REQ_ID_HEADER, 1, Headers) of
+			{value, {_, ReqId}, _} -> ReqId;
+			_ -> "" end,
+		{ok, #s3_object_info{key=Key, size=size(Data)}, {requestId, RequestId}}
     catch
 	throw:{error, Descr} ->
 	    {error, Descr}
@@ -172,10 +184,12 @@ put_object(Bucket, Key, Data, ContentType, Metadata) ->
 %%       {error, {Code::string(), Msg::string(), ReqId::string()}}
 %%
 get_object(Bucket, Key) ->
-    try genericRequest(erlaws_cred:get(), get, Bucket, Key, [], 
-		       [], "", <<>>) of
-	{ok, _Headers, Body} -> 
-	    {ok, Body}
+    try genericRequest(get, Bucket, Key, [], [], "", <<>>) of
+	{ok, Headers, Body} -> 
+		RequestId = case lists:keytake(?S3_REQ_ID_HEADER, 1, Headers) of
+			{value, {_, ReqId}, _} -> ReqId;
+			_ -> "" end,
+		{ok, Body, {requestId, RequestId}}
     catch
 	throw:{error, Descr} ->
 	    {error, Descr}
@@ -188,10 +202,14 @@ get_object(Bucket, Key) ->
 %%       {error, {Code::string(), Msg::string(), ReqId::string()}}
 %%
 info_object(Bucket, Key) ->
-    try genericRequest(erlaws_cred:get(), head, Bucket, Key, 
-		       [], [], "", <<>>) of
-	{ok, _Headers, _Body} ->
-	    {ok, []}
+    try genericRequest(head, Bucket, Key, [], [], "", <<>>) of
+	{ok, Headers, _Body} ->
+	    io:format("Headers: ~p~n", [Headers]),
+		MetadataList = [{string:substr(MKey, 12), Value} || {MKey, Value} <- Headers, string:str(MKey, "x-amz-meta") == 1],
+		RequestId = case lists:keytake(?S3_REQ_ID_HEADER, 1, Headers) of
+			{value, {_, ReqId}, _} -> ReqId;
+			_ -> "" end,
+		{ok, MetadataList, {requestId, RequestId}}
     catch
 	throw:{error, Descr} ->
 	    {error, Descr}
@@ -204,10 +222,12 @@ info_object(Bucket, Key) ->
 %%       {error, {Code::string(), Msg::string(), ReqId::string()}}
 %%
 delete_object(Bucket, Key) ->
-    try genericRequest(erlaws_cred:get(), delete, Bucket, 
-		       Key, [], [], "", <<>>) of
-	{ok, _Headers, _Body} ->
-	    {ok}
+    try genericRequest(delete, Bucket, Key, [], [], "", <<>>) of
+	{ok, Headers, _Body} ->
+		RequestId = case lists:keytake(?S3_REQ_ID_HEADER, 1, Headers) of
+			{value, {_, ReqId}, _} -> ReqId;
+			_ -> "" end,
+	    {ok, {requestId, RequestId}}
     catch
 	throw:{error, Descr} ->
 	    {error, Descr}
@@ -264,12 +284,17 @@ buildHost("") ->
 buildHost(Bucket) ->
     Bucket ++ "." ++ ?AWS_S3_HOST.
 
+buildProtocol() ->
+	case SECURE of 
+		true -> "https://";
+		_ -> "http://" end.
+
 buildUrl("", "", []) ->
-    "http://" ++ ?AWS_S3_HOST ++ "/";
+    buildProtocol() ++ ?AWS_S3_HOST ++ "/";
 buildUrl("", Path, []) ->
-    "http://" ++ ?AWS_S3_HOST ++ Path;
+    buildProtocol() ++ ?AWS_S3_HOST ++ Path;
 buildUrl(Bucket,Path,QueryParams) -> 
-    "http://" ++ Bucket ++ "." ++ ?AWS_S3_HOST ++ "/" ++ Path ++ 
+    buildProtocol() ++ Bucket ++ "." ++ ?AWS_S3_HOST ++ "/" ++ Path ++ 
 	erlaws_util:queryParams(QueryParams).
 
 buildContentHeaders( <<>>, _ ) -> [];
@@ -303,12 +328,12 @@ sign (Key,Data) ->
     %io:format("StringToSign:~n ~p~n", [Data]),
     binary_to_list( base64:encode( crypto:sha_mac(Key,Data) ) ).
 
-genericRequest( Credentials, Method, Bucket, Path, QueryParams, Metadata,
+genericRequest( Method, Bucket, Path, QueryParams, Metadata,
 		ContentType, Body ) ->
-    genericRequest( Credentials, Method, Bucket, Path, QueryParams, Metadata,
+    genericRequest( Method, Bucket, Path, QueryParams, Metadata,
 		    ContentType, Body, ?NR_OF_RETRIES).
 
-genericRequest( Credentials, Method, Bucket, Path, QueryParams, Metadata, 
+genericRequest( Method, Bucket, Path, QueryParams, Metadata, 
 		ContentType, Body, NrOfRetries) ->
     Date = httpd_util:rfc1123_date(erlang:localtime()),
     MethodString = string:to_upper( atom_to_list(Method) ),
@@ -323,7 +348,7 @@ genericRequest( Credentials, Method, Bucket, Path, QueryParams, Metadata,
 	buildMetadataHeaders(Metadata) ++ 
 	buildContentMD5Header(ContentMD5),
     
-    {AccessKey, SecretAccessKey } = Credentials,
+    {AccessKey, SecretAccessKey } = {AWS_KEY, AWS_SEC_KEY},
 
     Signature = sign(SecretAccessKey,
 		     stringToSign( MethodString, ContentMD5, ContentType, Date,
@@ -366,7 +391,7 @@ genericRequest( Credentials, Method, Bucket, Path, QueryParams, Metadata,
 	{ok, {{_HttpVersion, Code, _ReasonPhrase}, _ResponseHeaders, 
 	      _ResponseBody }} when Code=:=500 ->
 	    timer:sleep((?NR_OF_RETRIES-NrOfRetries)*500),
-	    genericRequest(Credentials, Method, Bucket, Path, QueryParams, 
+	    genericRequest(Method, Bucket, Path, QueryParams, 
 			   Metadata, ContentType, Body, NrOfRetries-1);
 	
  	{ok, {{_HttpVersion, _HttpCode, _ReasonPhrase}, ResponseHeaders, 
@@ -388,7 +413,7 @@ extractObjectInfo (Node) ->
     [ETag|_] = xmerl_xpath:string("./ETag/text()", Node),
     [LastModified|_] = xmerl_xpath:string("./LastModified/text()", Node),
     [Size|_] = xmerl_xpath:string("./Size/text()", Node),
-    #object_info{key=Key#xmlText.value, lastmodified=LastModified#xmlText.value,
+    #s3_object_info{key=Key#xmlText.value, lastmodified=LastModified#xmlText.value,
 		 etag=ETag#xmlText.value, size=Size#xmlText.value}.
 
 

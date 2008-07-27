@@ -6,7 +6,7 @@
 %% @end
 %%%-------------------------------------------------------------------
 
--module(erlaws_sdb).
+-module(erlaws_sdb, [AWS_KEY, AWS_SEC_KEY, SECURE]).
 
 %% exports
 -export([create_domain/1, delete_domain/1, list_domains/0, list_domains/1,
@@ -17,7 +17,8 @@
 %% include record definitions
 -include_lib("xmerl/include/xmerl.hrl").
 
--define(AWS_SDB_HOST, "http://sdb.amazonaws.com/").
+-define(AWS_SDB_HOST, "sdb.amazonaws.com").
+-define(AWS_SDB_VERSION, "2007-11-07").
 
 %% This function creates a new SimpleDB domain. The domain name must be unique among the 
 %% domains associated with your AWS Access Key ID. This function might take 10 
@@ -30,10 +31,13 @@
 %%       Code::string() -> "InvalidParameterValue" | "MissingParameter" | "NumberDomainsExceeded"
 %%
 create_domain(Domain) ->
-    try genericRequest(erlaws_cred:get(), "CreateDomain", 
+    try genericRequest("CreateDomain", 
 		       Domain, "", [], []) of
-	{ok, _Body} -> 
-	    {ok, Domain}
+	{ok, Body} ->
+		{XmlDoc, _Rest} = xmerl:scan_string(Body),
+		[#xmlText{value=RequestId}|_] =
+			xmerl_xpath:string("//ResponseMetadata/RequestId/text()", XmlDoc), 
+	    {ok, {requestId, RequestId}}
     catch 
 	throw:{error, Descr} -> 
 	    {error, Descr}
@@ -49,9 +53,13 @@ create_domain(Domain) ->
 %%       Code::string() -> "MissingParameter"
 %%
 delete_domain(Domain) ->
-    try genericRequest(erlaws_cred:get(), "DeleteDomain", 
+    try genericRequest("DeleteDomain", 
 		       Domain, "", [], []) of
-	{ok, _Body} -> Domain
+	{ok, Body} -> 
+		{XmlDoc, _Rest} = xmerl:scan_string(Body),
+		[#xmlText{value=RequestId}|_] =
+			xmerl_xpath:string("//ResponseMetadata/RequestId/text()", XmlDoc), 
+    	{ok, {requestId, RequestId}}
     catch
 	throw:{error, Descr} ->
 	    {error, Descr}
@@ -66,7 +74,7 @@ delete_domain(Domain) ->
 %% See list_domains/1 for a detailed error description
 %%
 list_domains() ->
-    erlaws_sdb:list_domains([]).
+    list_domains([]).
 
 %% Lists domains up to the limit set by {max_domains, integer()}.
 %% A NextToken is returned if there are more than max_domains domains. 
@@ -82,8 +90,8 @@ list_domains() ->
 %%
 %%       Code::string() -> "InvalidParameterValue" | "InvalidNextToken" | "MissingParameter"
 %%
-list_domains(Options) when is_list(Options) ->
-    try genericRequest(erlaws_cred:get(), "ListDomains", "", "", [], 
+list_domains(Options) ->
+    try genericRequest("ListDomains", "", "", [], 
 				[makeParam(X) || X <- Options]) of
 	{ok, Body} ->
 	    {XmlDoc, _Rest} = xmerl_scan:string(Body),
@@ -94,7 +102,9 @@ list_domains(Options) when is_list(Options) ->
 			    [] -> "";
 			    [#xmlText{value=NT}|_] -> NT
 			end,
-	    {ok, [Node#xmlText.value || Node <- DomainNodes], NextToken}
+		[#xmlText{value=RequestId}|_] =
+			xmerl_xpath:string("//ResponseMetadata/RequestId/text()", XmlDoc),
+	    {ok, [Node#xmlText.value || Node <- DomainNodes], NextToken, {requestId, RequestId}}
     catch
 	throw:{error, Descr} ->
 	    {error, Descr}
@@ -139,9 +149,13 @@ list_domains(Options) when is_list(Options) ->
 put_attributes(Domain, Item, Attributes) when is_list(Domain),
 					      is_list(Item),
 					      is_list(Attributes) ->
-    try genericRequest(erlaws_cred:get(), "PutAttributes", Domain, Item, 
+    try genericRequest("PutAttributes", Domain, Item, 
 		   Attributes, []) of
-	{ok, _Body} -> {ok}
+	{ok, Body} -> 
+		{XmlDoc, _Rest} = xmerl_scan:string(Body),
+		[#xmlText{value=RequestId}|_] =
+			xmerl_xpath:string("//ResponseMetadata/RequestId/text()", XmlDoc),
+		{ok, {requestId, RequestId}}
     catch 
 	throw:{error, Descr} ->
 	    {error, Descr}
@@ -158,10 +172,14 @@ put_attributes(Domain, Item, Attributes) when is_list(Domain),
 delete_attributes(Domain, Item, Attributes) when is_list(Domain),
 						 is_list(Item),
 						 is_list(Attributes) ->
-    try genericRequest(erlaws_cred:get(), "DeleteAttributes", Domain, Item,
+    try genericRequest("DeleteAttributes", Domain, Item,
 		   Attributes, []) of
-	{ok, _Body} -> {ok}
-    catch 
+	{ok, Body} -> 
+		{XmlDoc, _Rest} = xmerl_scan:string(Body),
+		[#xmlText{value=RequestId}|_] =
+			xmerl_xpath:string("//ResponseMetadata/RequestId/text()", XmlDoc),
+		{ok, {requestId, RequestId}}
+	catch 
 	throw:{error, Descr} ->
 	    {error, Descr}
     end.
@@ -177,10 +195,10 @@ delete_attributes(Domain, Item, Attributes) when is_list(Domain),
 delete_item(Domain, Item) when is_list(Domain), 
 			       is_list(Item) ->
     try delete_attributes(Domain, Item, []) of
-	{ok} -> {ok}
+		{ok, RequestId} -> {ok, RequestId}
     catch
-	throw:{error, Descr} ->
-	    {error, Descr}
+		throw:{error, Descr} ->
+	    	{error, Descr}
     end.
 
 %% Returns all of the attributes associated with the items in the given list.
@@ -276,7 +294,7 @@ get_attributes(Domain, Items, Attribute) when is_list(Domain),
 get_attributes(Domain, Item, Attribute) when is_list(Domain),
 					     is_list(Item),
 					     is_list(Attribute) ->
-    try genericRequest(erlaws_cred:get(), "GetAttributes", Domain, Item,
+    try genericRequest("GetAttributes", Domain, Item,
 		       Attribute, []) of
 	{ok, Body} ->
 	    {XmlDoc, _Rest} = xmerl_scan:string(Body),
@@ -327,7 +345,7 @@ list_items(Domain) ->
 %%                         "MissingParameter" | "NoSuchDomain"
 %%  
 list_items(Domain, Options) when is_list(Options) ->
-    try genericRequest(erlaws_cred:get(), "Query", Domain, "", [], 
+    try genericRequest("Query", Domain, "", [], 
 		       [makeParam(X) || X <- Options]) of
 	{ok, Body} ->
 	    {XmlDoc, _Rest} = xmerl_scan:string(Body),
@@ -336,7 +354,9 @@ list_items(Domain, Options) when is_list(Options) ->
 			    [] -> "";
 			    [#xmlText{value=NT}|_] -> NT
 			end,
-	    {ok, [Node#xmlText.value || Node <- ItemNodes], NextToken}
+		[#xmlText{value=RequestId}|_] =
+			xmerl_xpath:string("//ResponseMetadata/RequestId/text()", XmlDoc),
+	    {ok, [Node#xmlText.value || Node <- ItemNodes], NextToken, {requestId, RequestId}}
     catch
 	throw:{error, Descr} ->
 	    {error, Descr}
@@ -373,12 +393,14 @@ query_items(Domain, QueryExp) ->
 %%                         "MissingParameter" | "NoSuchDomain"
 %%  
 query_items(Domain, QueryExp, Options) when is_list(Options) ->
-    {ok, Body} = genericRequest(erlaws_cred:get(), "Query", Domain, "", [], 
+    {ok, Body} = genericRequest("Query", Domain, "", [], 
 				[{"QueryExpression", QueryExp}|
 				 [makeParam(X) || X <- Options]]),
     {XmlDoc, _Rest} = xmerl_scan:string(Body),
     ItemNodes = xmerl_xpath:string("//ItemName/text()", XmlDoc),
-    {ok, [Node#xmlText.value || Node <- ItemNodes]}.
+	[#xmlText{value=RequestId}|_] =
+		xmerl_xpath:string("//ResponseMetadata/RequestId/text()", XmlDoc),
+    {ok, [Node#xmlText.value || Node <- ItemNodes], {requestId, RequestId}}.
 
 %% storage cost
 
@@ -407,25 +429,29 @@ sign (Key,Data) ->
     %io:format("StringToSign:~n ~p~n", [Data]),
     binary_to_list( base64:encode( crypto:sha_mac(Key,Data) ) ).
 
-genericRequest({AccessKey, SecretKey}, Action, Domain, Item, 
+genericRequest(Action, Domain, Item, 
 	       Attributes, Options) ->
     Timestamp = lists:flatten(erlaws_util:get_timestamp()),
-    Signature = sign(SecretKey, Action++Timestamp),
     ActionQueryParams = getQueryParams(Action, Domain, Item, Attributes, 
 				       Options),
-    FinalQueryParams = [{"AWSAccessKeyId", AccessKey},
+	SignParams = [{"AWSAccessKeyId", AWS_KEY},
 			{"Action", Action}, 
-			{"Version", "2007-11-07"},
-			{"Timestamp", Timestamp},
-			{"Signature", Signature}] ++ ActionQueryParams,
+			{"Version", ?AWS_SDB_VERSION},
+			{"SignatureVersion", "1"},
+			{"Timestamp", Timestamp}] ++ ActionQueryParams,
+	StringToSign = erlaws_util:mkEnumeration([Param++Value || {Param, Value} <- lists:sort(fun (A, B) -> 
+		{KeyA, _} = A,
+		{KeyB, _} = B,
+		string:to_lower(KeyA) =< string:to_lower(KeyB) end, 
+		SignParams)], ""),		
+    Signature = sign(AWS_SEC_KEY, StringToSign),
+    FinalQueryParams = SignParams ++ [{"Signature", Signature}],
     Result = mkReq(FinalQueryParams),
     case Result of
 	{ok, _Status, Body} ->
 	    {ok, Body};
-	{error, {_Proto, 400, _Reason}, Body} ->
-	    throw({error, mkErr(Body)});
-	{error, {_Proto, Code, Reason}, _Body} ->
-	    throw({error, {integer_to_list(Code), Reason, ""}})
+	{error, {_Proto, Code, Reason}, Body} ->
+	    throw({error, {integer_to_list(Code), Reason}, mkErr(Body)})
     end.
 
 getQueryParams("CreateDomain", Domain, _Item, _Attributes, _Options) ->
@@ -452,9 +478,14 @@ getQueryParams("DeleteAttributes", Domain, Item, Attributes, _Options) ->
 getQueryParams("Query", Domain, _Item, _Attributes, Options) ->
     [{"DomainName", Domain}] ++ Options.
 
+getProtocol() ->
+	case SECURE of 
+		true -> "https://";
+		_ -> "http://" end.
+
 mkReq(QueryParams) ->
     %io:format("QueryParams:~n ~p~n", [QueryParams]),
-    Url = ?AWS_SDB_HOST ++ erlaws_util:queryParams( QueryParams ),
+    Url = getProtocol() ++ ?AWS_SDB_HOST ++ "/" ++ erlaws_util:queryParams( QueryParams ),
     %io:format("RequestUrl:~n ~p~n", [Url]),
     Request = {Url, []},
     HttpOptions = [{autoredirect, true}],
@@ -470,7 +501,7 @@ mkReq(QueryParams) ->
 buildAttributeParams(Attributes) ->
     CAttr = collapse(Attributes),
     {_C, L} = lists:foldl(fun flattenParams/2, {0, []}, CAttr),
-    %io:format("FlattenedList:~n ~p~n", [L]),
+    io:format("FlattenedList:~n ~p~n", [L]),
     lists:reverse(L).
 
 mkEntryName(Counter, Key) ->

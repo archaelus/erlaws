@@ -7,15 +7,10 @@
 start() ->
     application:start(sasl),
     crypto:start(),
-    inets:start(),
-    application:start(erlaws).
+    inets:start().
 
 start(_Type, _Args) -> 
-    Env = application:get_env(aws_credentials),
-    io:format("Creds:~n ~p~n", [Env]),
-    {ok, Creds} = Env,
-    erlaws_cred:start(Creds). 
-
+	erlaws:start().
+	
 stop(_State) -> 
-    erlaws_cred:stop(),
     ok. 
