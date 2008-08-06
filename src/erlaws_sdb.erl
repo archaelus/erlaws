@@ -300,10 +300,16 @@ get_attributes(Domain, Item, Attribute) when is_list(Domain),
 	    {XmlDoc, _Rest} = xmerl_scan:string(Body),
 	    AttrList = [{KN, VN} || Node <- xmerl_xpath:string("//Attribute", XmlDoc),
 				    begin
-					[#xmlText{value=KN}|_] = 
+					[#xmlText{value=KeyRaw}|_] = 
 					    xmerl_xpath:string("./Name/text()", Node),
-					[#xmlText{value=VN}|_] = 
-					    xmerl_xpath:string("./Value/text()", Node),
+					KN = case xmerl_xpath:string("./Name/@encoding", Node) of 
+						[#xmlAttribute{value="base64"}|_] -> base64:decode(KeyRaw);
+						_ -> KeyRaw end,
+					ValueRaw = 
+					    lists:flatten([ ValueR || #xmlText{value=ValueR} <- xmerl_xpath:string("./Value/text()", Node)]),
+					VN = case xmerl_xpath:string("./Value/@encoding", Node) of 
+						[#xmlAttribute{value="base64"}|_] -> base64:decode(ValueRaw);
+						_ -> ValueRaw end,
 					true
 				    end],
 	    {ok, [{Item, lists:foldr(fun aggregateAttr/2, [], AttrList)}]}
@@ -501,7 +507,7 @@ mkReq(QueryParams) ->
 buildAttributeParams(Attributes) ->
     CAttr = collapse(Attributes),
     {_C, L} = lists:foldl(fun flattenParams/2, {0, []}, CAttr),
-    io:format("FlattenedList:~n ~p~n", [L]),
+    %io:format("FlattenedList:~n ~p~n", [L]),
     lists:reverse(L).
 
 mkEntryName(Counter, Key) ->
